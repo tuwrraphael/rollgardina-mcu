@@ -60,8 +60,8 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define AIN2_Pin GPIO_PIN_1
-#define AIN2_GPIO_Port GPIOA
+#define TRADFRI_STATE_Pin GPIO_PIN_1
+#define TRADFRI_STATE_GPIO_Port GPIOA
 #define AIN1_Pin GPIO_PIN_3
 #define AIN1_GPIO_Port GPIOA
 #define STBY_Pin GPIO_PIN_4
@@ -75,7 +75,7 @@ void Error_Handler(void);
 #define PWMA_Pin GPIO_PIN_11
 #define PWMA_GPIO_Port GPIOA
 /* USER CODE BEGIN Private defines */
-
+#define TIMER2_CLOCK (8000000)
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

@@ -23,7 +23,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "NEC_Decode.h"
+#include "tradfri_decode.h"
 #include "stepper_driver.h"
 /* USER CODE END Includes */
 
@@ -48,7 +48,7 @@ TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
 
 /* USER CODE BEGIN PV */
-NEC nec;
+tradfri_decoder_t tradfri_decoder;
 stepper_driver_t stepper;
 uint8_t lastCmd = 0;
 /* USER CODE END PV */
@@ -65,70 +65,10 @@ static void Change_Pulse(uint16_t pulse);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-void myNecDecodedCallback(uint16_t addr, uint8_t cmd) {
-  lastCmd = cmd;
-    switch (cmd)
-    {
-    case 246:
-      stepper_drive_forward(&stepper);
-      break;
-    case 248:
-      stepper_drive_backward(&stepper);
-      break;
-    case 187:
-      stepper_set_start(&stepper);
-      break;
-    case 188:
-      stepper_set_end(&stepper);
-      break;
-    case 233:
-      stepper_drive_target(&stepper, 0);
-      break;
-    case 243:
-      stepper_drive_target(&stepper, 1);
-      break;
-    case 231:
-      stepper_drive_target(&stepper, 2);
-      break;
-      case 161:
-      stepper_drive_target(&stepper, 3);
-      break;
-      case 247:
-      stepper_drive_target(&stepper, 4);
-      break;
-      case 227:
-      stepper_drive_target(&stepper, 5);
-      break;
-      case 165:
-      stepper_drive_target(&stepper, 6);
-      break;
-      case 189:
-      stepper_drive_target(&stepper, 7);
-      break;
-      case 173:
-      stepper_drive_target(&stepper, 8);
-      break;
-      case 181:
-      stepper_drive_target(&stepper, 9);
-      break;
-    default:
-      break;
-    }
-}
-
-
-void myNecRepeatCallback() {
-  if (lastCmd == 246) {
-    stepper_drive_forward(&stepper);
-  }
-  else if (lastCmd == 248) {
-    stepper_drive_backward(&stepper);
-  }
-}
 
 void HAL_TIM_IC_CaptureCallback(TIM_HandleTypeDef *htim) {
     if (htim == &htim2) {
-        NEC_TIM_IC_CaptureCallback(&nec, &htim2);
+        tradfri_capture_callback(&tradfri_decoder, &htim2);
     }
 }
 
@@ -137,6 +77,16 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
       stepper_time_update(&stepper);
     }
 }
+
+void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim) {
+  if (htim == &htim2) {
+      tradfri_elapsed_callback(&tradfri_decoder, &htim2);
+  }
+}
+
+void tradfri_value_callback(uint16_t value) {
+}
+// extern void initialise_monitor_handles(void);
 /* USER CODE END 0 */
 
 /**
@@ -172,11 +122,12 @@ int main(void)
   MX_TIM2_Init();
   MX_TIM3_Init();
   /* USER CODE BEGIN 2 */
-    nec.NEC_DecodedCallback = myNecDecodedCallback;
-    nec.NEC_RepeatCallback = myNecRepeatCallback;
-
+    // initialise_monitor_handles();
+    tradfri_decoder.new_value_callback = tradfri_value_callback;
+    tradfri_init(&tradfri_decoder, &htim2, TIMER2_CLOCK);
     HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_1);
     HAL_TIM_IC_Start_IT(&htim2, TIM_CHANNEL_2);
+    HAL_TIM_OC_Start_IT(&htim2, TIM_CHANNEL_3);
     HAL_TIM_Base_Start_IT(&htim2);
     stepper_init(&stepper, &htim1, &htim3);
     Change_Pulse(30);
@@ -209,9 +160,7 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
-  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL16;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -220,12 +169,12 @@ void SystemClock_Config(void)
   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
   {
     Error_Handler();
   }
@@ -337,14 +286,15 @@ static void MX_TIM2_Init(void)
   TIM_SlaveConfigTypeDef sSlaveConfig = {0};
   TIM_MasterConfigTypeDef sMasterConfig = {0};
   TIM_IC_InitTypeDef sConfigIC = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
 
   /* USER CODE BEGIN TIM2_Init 1 */
 
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 63;
+  htim2.Init.Prescaler = 5;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 119999;
+  htim2.Init.Period = 2300;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
@@ -360,9 +310,13 @@ static void MX_TIM2_Init(void)
   {
     Error_Handler();
   }
+  if (HAL_TIM_OC_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
   sSlaveConfig.SlaveMode = TIM_SLAVEMODE_RESET;
   sSlaveConfig.InputTrigger = TIM_TS_TI1FP1;
-  sSlaveConfig.TriggerPolarity = TIM_INPUTCHANNELPOLARITY_FALLING;
+  sSlaveConfig.TriggerPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
   sSlaveConfig.TriggerFilter = 0;
   if (HAL_TIM_SlaveConfigSynchronization(&htim2, &sSlaveConfig) != HAL_OK)
   {
@@ -374,18 +328,25 @@ static void MX_TIM2_Init(void)
   {
     Error_Handler();
   }
-  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_FALLING;
+  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
   sConfigIC.ICSelection = TIM_ICSELECTION_DIRECTTI;
   sConfigIC.ICPrescaler = TIM_ICPSC_DIV1;
-  sConfigIC.ICFilter = 4;
+  sConfigIC.ICFilter = 0;
   if (HAL_TIM_IC_ConfigChannel(&htim2, &sConfigIC, TIM_CHANNEL_1) != HAL_OK)
   {
     Error_Handler();
   }
-  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_RISING;
+  sConfigIC.ICPolarity = TIM_INPUTCHANNELPOLARITY_FALLING;
   sConfigIC.ICSelection = TIM_ICSELECTION_INDIRECTTI;
-  sConfigIC.ICFilter = 0;
   if (HAL_TIM_IC_ConfigChannel(&htim2, &sConfigIC, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_TIMING;
+  sConfigOC.Pulse = 2300;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_OC_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_3) != HAL_OK)
   {
     Error_Handler();
   }
@@ -454,13 +415,16 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOA_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, AIN2_Pin|AIN1_Pin|STBY_Pin|BIN1_Pin 
-                          |BIN2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, AIN1_Pin|STBY_Pin|BIN1_Pin|BIN2_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins : AIN2_Pin AIN1_Pin STBY_Pin BIN1_Pin 
-                           BIN2_Pin */
-  GPIO_InitStruct.Pin = AIN2_Pin|AIN1_Pin|STBY_Pin|BIN1_Pin 
-                          |BIN2_Pin;
+  /*Configure GPIO pin : TRADFRI_STATE_Pin */
+  GPIO_InitStruct.Pin = TRADFRI_STATE_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(TRADFRI_STATE_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : AIN1_Pin STBY_Pin BIN1_Pin BIN2_Pin */
+  GPIO_InitStruct.Pin = AIN1_Pin|STBY_Pin|BIN1_Pin|BIN2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
