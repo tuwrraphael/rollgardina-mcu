@@ -5,6 +5,9 @@
 #include "stm32f3xx_hal.h"
 
 #define PERIOD_INACCURACY (10)
+#define TRADFRI_FREQ (600)
+#define RESET_WAIT_SECONDS (3)
+
 
 typedef struct
 {
@@ -12,6 +15,7 @@ typedef struct
     uint16_t period;
     uint16_t tradfri_period;
     uint16_t duty;
+    uint16_t wait_values_ctr;
 
     void (*new_value_callback)(uint16_t);
 } tradfri_decoder_t;

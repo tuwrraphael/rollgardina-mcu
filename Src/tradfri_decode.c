@@ -4,21 +4,33 @@
 
 void tradfri_init(tradfri_decoder_t *handle, TIM_HandleTypeDef *htim, uint32_t tradfri_timer_clock)
 {
-    uint32_t period = tradfri_timer_clock / (htim->Init.Prescaler + 1) / 600;
+    uint32_t period = tradfri_timer_clock / (htim->Init.Prescaler + 1) / TRADFRI_FREQ;
     handle->tradfri_period = period;
     handle->pulse_width = 0;
     handle->period = 0;
-    handle->duty = 0;
+    handle->duty = 0xFFFF;
+    handle->wait_values_ctr = RESET_WAIT_SECONDS * TRADFRI_FREQ;
 }
 
 static void tradfri_update_value(tradfri_decoder_t *handle, uint16_t duty)
 {
-    if (handle->duty != duty)
+    if (handle->wait_values_ctr > 0)
+    {
+        handle->wait_values_ctr--;
+        return;
+    }
+    if ((duty == 0 || duty == 100) && handle->duty != duty)
+    {
+        handle->new_value_callback((uint16_t)duty);
+        handle->duty = duty;
+    }
+    int16_t diff = handle->duty - duty;
+    if (diff > 3 || diff < -3)
     {
         double corrected = -50.9 + 32.8 * log((double)duty);
         handle->new_value_callback((uint16_t)corrected);
+        handle->duty = duty;
     }
-    handle->duty = duty;
 }
 
 void tradfri_capture_callback(tradfri_decoder_t *handle, TIM_HandleTypeDef *htim)

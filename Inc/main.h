@@ -50,8 +50,6 @@ extern "C" {
 
 /* USER CODE END EM */
 
-void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
-
 /* Exported functions prototypes ---------------------------------------------*/
 void Error_Handler(void);
 
@@ -60,22 +58,31 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define DRV_M1_Pin GPIO_PIN_0
+#define DRV_M1_GPIO_Port GPIOF
+#define DRV_M0_Pin GPIO_PIN_1
+#define DRV_M0_GPIO_Port GPIOF
 #define TRADFRI_STATE_Pin GPIO_PIN_1
 #define TRADFRI_STATE_GPIO_Port GPIOA
-#define AIN1_Pin GPIO_PIN_3
-#define AIN1_GPIO_Port GPIOA
-#define STBY_Pin GPIO_PIN_4
-#define STBY_GPIO_Port GPIOA
-#define BIN1_Pin GPIO_PIN_5
-#define BIN1_GPIO_Port GPIOA
-#define BIN2_Pin GPIO_PIN_6
-#define BIN2_GPIO_Port GPIOA
-#define PWMB_Pin GPIO_PIN_8
-#define PWMB_GPIO_Port GPIOA
-#define PWMA_Pin GPIO_PIN_11
-#define PWMA_GPIO_Port GPIOA
+#define DRV_STEP_Pin GPIO_PIN_0
+#define DRV_STEP_GPIO_Port GPIOB
+#define DRV_M2_Pin GPIO_PIN_1
+#define DRV_M2_GPIO_Port GPIOB
+#define DRV_EN_Pin GPIO_PIN_8
+#define DRV_EN_GPIO_Port GPIOA
+#define DRV_DIR_Pin GPIO_PIN_12
+#define DRV_DIR_GPIO_Port GPIOA
+#define END_UNTEN_Pin GPIO_PIN_4
+#define END_UNTEN_GPIO_Port GPIOB
+#define END_OBEN_Pin GPIO_PIN_5
+#define END_OBEN_GPIO_Port GPIOB
+#define DRV_RESET_Pin GPIO_PIN_6
+#define DRV_RESET_GPIO_Port GPIOB
+#define DRV_SLEEP_Pin GPIO_PIN_7
+#define DRV_SLEEP_GPIO_Port GPIOB
 /* USER CODE BEGIN Private defines */
 #define TIMER2_CLOCK (8000000)
+#define TIMER3_CLOCK (8000000)
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

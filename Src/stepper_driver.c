@@ -1,211 +1,191 @@
 #include "stepper_driver.h"
 #include "main.h"
 
-static void apply_step(uint8_t step)
+#define STATE_SLEEPING (GPIO_PIN_RESET)
+#define STATE_ACTIVE (GPIO_PIN_SET)
+#define PIN_DIR_UNTEN (GPIO_PIN_RESET)
+#define PIN_DIR_OBEN (GPIO_PIN_SET)
+
+static void change_period(stepper_driver_t *instance, uint16_t period)
 {
-    // switch (step)
-    // {
-    // case 0: // 1010
-    //     HAL_GPIO_WritePin(AIN1_GPIO_Port, AIN1_Pin, GPIO_PIN_SET);
-    //     HAL_GPIO_WritePin(AIN2_GPIO_Port, AIN2_Pin, GPIO_PIN_RESET);
-    //     HAL_GPIO_WritePin(BIN1_GPIO_Port, BIN1_Pin, GPIO_PIN_SET);
-    //     HAL_GPIO_WritePin(BIN2_GPIO_Port, BIN2_Pin, GPIO_PIN_RESET);
-    //     break;
-    // case 1: // 0110
-    //     HAL_GPIO_WritePin(AIN1_GPIO_Port, AIN1_Pin, GPIO_PIN_RESET);
-    //     HAL_GPIO_WritePin(AIN2_GPIO_Port, AIN2_Pin, GPIO_PIN_SET);
-    //     HAL_GPIO_WritePin(BIN1_GPIO_Port, BIN1_Pin, GPIO_PIN_SET);
-    //     HAL_GPIO_WritePin(BIN2_GPIO_Port, BIN2_Pin, GPIO_PIN_RESET);
-    //     break;
-    // case 2: //0101
-    //     HAL_GPIO_WritePin(AIN1_GPIO_Port, AIN1_Pin, GPIO_PIN_RESET);
-    //     HAL_GPIO_WritePin(AIN2_GPIO_Port, AIN2_Pin, GPIO_PIN_SET);
-    //     HAL_GPIO_WritePin(BIN1_GPIO_Port, BIN1_Pin, GPIO_PIN_RESET);
-    //     HAL_GPIO_WritePin(BIN2_GPIO_Port, BIN2_Pin, GPIO_PIN_SET);
-    //     break;
-    // case 3: //1001
-    //     HAL_GPIO_WritePin(AIN1_GPIO_Port, AIN1_Pin, GPIO_PIN_SET);
-    //     HAL_GPIO_WritePin(AIN2_GPIO_Port, AIN2_Pin, GPIO_PIN_RESET);
-    //     HAL_GPIO_WritePin(BIN1_GPIO_Port, BIN1_Pin, GPIO_PIN_RESET);
-    //     HAL_GPIO_WritePin(BIN2_GPIO_Port, BIN2_Pin, GPIO_PIN_SET);
-    //     break;
-    // }
+    __HAL_TIM_SET_AUTORELOAD(instance->updateTimerHandle, period);
+    instance->update_cycle_us = (1000 * 1000 * period) / instance->update_timer_clock;
+}
+
+static void reset_acc(stepper_driver_t *instance, stepper_dir_t dir)
+{
+    instance->acc_timeout = ACC_STEP_US;
+    instance->acc_step = ACC_STEPS;
+    change_period(instance, instance->arr_speed_start);
+    if (DIR_RAUF == dir)
+    {
+        instance->arr_speed_end = instance->arr_speed_rauf;
+    }
+    else if (DIR_RUNTER == dir)
+    {
+        instance->arr_speed_end = instance->arr_speed_runter;
+    }
+    else
+    {
+        instance->arr_speed_end = instance->arr_speed_start;
+    }
 }
 
 static void motor_start(stepper_driver_t *instance)
 {
-    __HAL_TIM_SET_AUTORELOAD(instance->updateTimerHandle, instance->stepper_arr_start);
-    instance->stepper_arr_current = instance->stepper_arr_start;
-    instance->stepper_arr_dec = (instance->stepper_arr_start - instance->stepper_arr_max) / instance->stepper_arr_steps;
-    instance->stepper_arr_dec_ctr = 50;
-    // the following start start the timer
-    HAL_TIM_PWM_Start(instance->pwmTimerHandler, TIM_CHANNEL_1);
-    HAL_TIM_PWM_Start(instance->pwmTimerHandler, TIM_CHANNEL_4);
+    HAL_GPIO_WritePin(DRV_SLEEP_GPIO_Port, DRV_SLEEP_Pin, STATE_ACTIVE);
     HAL_TIM_Base_Start_IT(instance->updateTimerHandle);
+    instance->drv_pin = false;
 }
 
-void stepper_init(stepper_driver_t *instance, TIM_HandleTypeDef *timerHandle, TIM_HandleTypeDef *updateTimerHandle)
+static uint32_t get_pos(stepper_driver_t *instance, uint16_t percentage)
+{
+    return instance->obenPos + (uint32_t)((double)percentage / (double)100 * (double)(instance->untenPos - instance->obenPos));
+}
+
+void stepper_init(stepper_driver_t *instance, TIM_HandleTypeDef *updateTimerHandle, uint32_t timer_clock)
 {
     instance->currentPos = UINT32_MAX / 2;
-    instance->endPos = UINT32_MAX / 2 + 200;
+    instance->untenPos = UINT32_MAX / 2 + (uint32_t)ABROLL_STEPS;
     instance->mode = MODE_STOPPED;
     instance->targetPos = UINT32_MAX / 2;
-    instance->startPos = UINT32_MAX / 2;
-    instance->pwmTimerHandler = timerHandle;
+    instance->targetPercentage = 0;
+    instance->obenPos = UINT32_MAX / 2;
     instance->updateTimerHandle = updateTimerHandle;
     instance->timeout = 0;
-    instance->stepper_arr_start = 5000;
-    instance->stepper_arr_steps = 3;
-    // HAL_GPIO_WritePin(STBY_GPIO_Port, STBY_Pin, GPIO_PIN_SET);
-    // HAL_GPIO_WritePin(AIN1_GPIO_Port, AIN1_Pin, GPIO_PIN_SET);
-    // HAL_GPIO_WritePin(AIN2_GPIO_Port, AIN2_Pin, GPIO_PIN_SET);
-    // HAL_GPIO_WritePin(BIN1_GPIO_Port, BIN1_Pin, GPIO_PIN_SET);
-    // HAL_GPIO_WritePin(BIN2_GPIO_Port, BIN2_Pin, GPIO_PIN_SET);
+    instance->acc_step = 0;
+    instance->acc_timeout = 0;
+    instance->first_value_received = false;
+    instance->last_dir = DIR_NONE;
+    instance->update_timer_clock = timer_clock / (updateTimerHandle->Init.Prescaler + 1);
+    instance->arr_speed_runter = ((uint32_t)(ZEIT_RUNTER * instance->update_timer_clock) / ABROLL_STEPS) / 2;
+    instance->arr_speed_rauf = ((uint32_t)(ZEIT_RAUF * instance->update_timer_clock) / ABROLL_STEPS) / 2;
+    instance->arr_speed_start = (1 * instance->update_timer_clock / ACC_START_STEP_S) / 2;
+    instance->arr_speed_end = instance->arr_speed_start;
+    instance->drv_pin = false;
+
+    HAL_GPIO_WritePin(DRV_M0_GPIO_Port, DRV_M0_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(DRV_M1_GPIO_Port, DRV_M1_Pin, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(DRV_M2_GPIO_Port, DRV_M2_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(DRV_STEP_GPIO_Port, DRV_STEP_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(DRV_EN_GPIO_Port, DRV_EN_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(DRV_RESET_GPIO_Port, DRV_RESET_Pin, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(DRV_DIR_GPIO_Port, DRV_DIR_Pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(DRV_SLEEP_GPIO_Port, DRV_SLEEP_Pin, STATE_SLEEPING);
 }
 
 void stepper_time_update(stepper_driver_t *instance)
 {
-    instance->stepper_arr_dec_ctr = instance->stepper_arr_dec_ctr > 0 ? instance->stepper_arr_dec_ctr - 1 : 0;
-    if (instance->stepper_arr_dec_ctr == 0)
+    bool obenEndReached = false;
+    bool untenEndReached = false;
+    if (HAL_GPIO_ReadPin(END_OBEN_GPIO_Port, END_OBEN_Pin) == GPIO_PIN_RESET)
     {
-        int32_t target = ((int32_t)instance->stepper_arr_current - (int32_t)instance->stepper_arr_dec);
-        if ((int32_t)instance->stepper_arr_max < target) {
-            __HAL_TIM_SET_AUTORELOAD(instance->updateTimerHandle, (uint16_t)target);
-            instance->stepper_arr_current = (uint16_t)target;
-        }       
-        instance->stepper_arr_dec_ctr = 50;
+        obenEndReached = true;
+        instance->currentPos = instance->obenPos;
+        instance->targetPos = get_pos(instance, instance->targetPercentage);
     }
-    bool goToStop = true;
-    instance->timeout = instance->timeout > 0 ? instance->timeout - 1 : 0;
+    else if (HAL_GPIO_ReadPin(END_UNTEN_GPIO_Port, END_UNTEN_Pin) == GPIO_PIN_RESET)
+    {
+        untenEndReached = true;
+        instance->currentPos = instance->untenPos;
+        instance->targetPos = get_pos(instance, instance->targetPercentage);
+    }
+
+    instance->timeout = instance->timeout > instance->update_cycle_us ? instance->timeout - instance->update_cycle_us : 0;
+    instance->acc_timeout = instance->acc_timeout > instance->update_cycle_us ? instance->acc_timeout - instance->update_cycle_us : 0;
+    if (obenEndReached || untenEndReached) {
+        instance->endschalter_timeout += instance->update_cycle_us;
+    }
+    int16_t makeStep = 0;
     switch (instance->mode)
     {
     case MODE_STOPPED:
-        goToStop = true;
-        break;
-    case MODE_DRIVE_FORWARD:
-        if (instance->timeout > 0)
-        {
-            instance->currentPos++;
-            goToStop = false;
-        }
-        else
-        {
-            goToStop = true;
-        }
-        break;
-    case MODE_DRIVE_BACKWARD:
-        if (instance->timeout > 0)
-        {
-            instance->currentPos--;
-            goToStop = false;
-        }
-        else
-        {
-            goToStop = true;
-        }
+        makeStep = 0;
         break;
     case MODE_DRIVE_TARGET:
-        if (instance->currentPos == instance->targetPos)
+        if (instance->timeout == 0 || instance->endschalter_timeout > (ENDSCHALTER_TIMOUT_SECONDS * 1000 * 1000))
         {
-            goToStop = true;
+            makeStep = 0;
         }
-        else if (instance->currentPos > instance->targetPos)
+        else if (instance->currentPos == instance->targetPos)
         {
-            instance->currentPos--;
-            goToStop = false;
+            makeStep = 0;
         }
-        else if (instance->currentPos < instance->targetPos)
+        else if (instance->currentPos > instance->targetPos && !obenEndReached)
         {
-            instance->currentPos++;
-            goToStop = false;
+            makeStep = -1;
+            HAL_GPIO_WritePin(DRV_DIR_GPIO_Port, DRV_DIR_Pin, PIN_DIR_OBEN);
+        }
+        else if (instance->currentPos < instance->targetPos && !untenEndReached)
+        {
+            makeStep = 1;
+            HAL_GPIO_WritePin(DRV_DIR_GPIO_Port, DRV_DIR_Pin, PIN_DIR_UNTEN);
         }
         break;
     default:
+        makeStep = 0;
         break;
     }
-    if (goToStop)
+    stepper_dir_t dir = makeStep < 0 ? DIR_RAUF : makeStep > 0 ? DIR_RUNTER : DIR_NONE;
+    if (makeStep == 0)
     {
-        // HAL_GPIO_WritePin(AIN1_GPIO_Port, AIN1_Pin, GPIO_PIN_SET);
-        // HAL_GPIO_WritePin(AIN2_GPIO_Port, AIN2_Pin, GPIO_PIN_SET);
-        // HAL_GPIO_WritePin(BIN1_GPIO_Port, BIN1_Pin, GPIO_PIN_SET);
-        // HAL_GPIO_WritePin(BIN2_GPIO_Port, BIN2_Pin, GPIO_PIN_SET);
-        // the following should stop the timer
-        HAL_TIM_PWM_Stop(instance->pwmTimerHandler, TIM_CHANNEL_1);
-        HAL_TIM_PWM_Stop(instance->pwmTimerHandler, TIM_CHANNEL_4);
+        HAL_GPIO_WritePin(DRV_SLEEP_GPIO_Port, DRV_SLEEP_Pin, STATE_SLEEPING);
+        HAL_GPIO_WritePin(DRV_STEP_GPIO_Port, DRV_STEP_Pin, GPIO_PIN_RESET);
         HAL_TIM_Base_Stop_IT(instance->updateTimerHandle);
         instance->mode = MODE_STOPPED;
+        instance->last_dir = DIR_NONE;
+        instance->drv_pin = false;
     }
     else
     {
-        apply_step(instance->currentPos % 4);
+        if (dir != instance->last_dir)
+        {
+            instance->last_dir = dir;
+            reset_acc(instance, dir);
+        }
+        if (instance->acc_timeout == 0)
+        {
+            if (instance->acc_step > 0)
+            {
+                instance->acc_step--;
+                double arr = instance->arr_speed_start + (double)(instance->arr_speed_end - instance->arr_speed_start) * (1.0 - ((double)instance->acc_step / (double)ACC_STEPS));
+                change_period(instance, (uint16_t)arr);
+                instance->acc_timeout = ACC_STEP_US;
+            }
+        }
+        HAL_GPIO_WritePin(DRV_STEP_GPIO_Port, DRV_STEP_Pin, instance->drv_pin ? GPIO_PIN_RESET : GPIO_PIN_SET);
+        if (instance->drv_pin)
+        {
+            instance->currentPos += makeStep;
+        }
+        instance->drv_pin = !instance->drv_pin;
     }
 }
 
-void stepper_set_start(stepper_driver_t *instance)
+void stepper_drive_target(stepper_driver_t *instance, uint16_t percentage)
 {
-    instance->startPos = instance->currentPos;
-}
-
-void stepper_set_end(stepper_driver_t *instance)
-{
-    instance->endPos = instance->currentPos;
-}
-
-/**
- * @param percentage 0-9
- */
-void stepper_drive_target(stepper_driver_t *instance, uint8_t percentage)
-{
-    if (instance->mode != MODE_STOPPED)
+    if (!instance->first_value_received)
+    {
+        instance->first_value_received = true;
+        instance->currentPos = get_pos(instance, percentage);
+        return;
+    }
+    instance->targetPercentage = percentage;
+    bool startedBefore = instance->mode != MODE_STOPPED;
+    if (instance->untenPos < instance->obenPos)
     {
         return;
     }
-    if (instance->endPos < instance->startPos)
+    if (instance->currentPos < instance->obenPos || instance->currentPos > instance->untenPos)
     {
         return;
     }
-    if (instance->currentPos < instance->startPos || instance->currentPos > instance->endPos)
-    {
-        return;
-    }
-    instance->targetPos = instance->startPos + (uint32_t)((double)percentage / (double)9 * (double)(instance->endPos - instance->startPos));
+    instance->targetPos = get_pos(instance, percentage);
     instance->mode = MODE_DRIVE_TARGET;
-    if (instance->targetPos > instance->currentPos)
+    instance->timeout = DRV_TIMEOUT_SECONDS * 1000 * 1000;
+    instance->endschalter_timeout = 0;
+    if (!startedBefore)
     {
-        instance->stepper_arr_max = 1000;
-    }
-    else
-    {
-        instance->stepper_arr_max = 3840;
-    }
-    motor_start(instance);
-}
-
-void stepper_drive_forward(stepper_driver_t *instance)
-{
-    if (instance->mode != MODE_STOPPED && instance->mode != MODE_DRIVE_FORWARD)
-    {
-        return;
-    }
-    instance->timeout = 0.2/(1/(64000000.0/(127.0+1.0)/(double)(instance->stepper_arr_current + 1)));
-    if (instance->mode == MODE_STOPPED)
-    {
-        instance->stepper_arr_max = 1000;
-        instance->mode = MODE_DRIVE_FORWARD;
-        motor_start(instance);
-    }
-}
-void stepper_drive_backward(stepper_driver_t *instance)
-{
-    if (instance->mode != MODE_STOPPED && instance->mode != MODE_DRIVE_BACKWARD)
-    {
-        return;
-    }
-    instance->timeout = 0.2/(1/(64000000.0/(127.0+1.0)/(double)(instance->stepper_arr_current + 1)));
-    if (instance->mode == MODE_STOPPED)
-    {
-        instance->stepper_arr_max = 3840;
-        instance->mode = MODE_DRIVE_BACKWARD;
         motor_start(instance);
     }
 }
