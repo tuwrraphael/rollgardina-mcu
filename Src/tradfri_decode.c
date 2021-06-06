@@ -10,6 +10,9 @@ void tradfri_init(tradfri_decoder_t *handle, TIM_HandleTypeDef *htim, uint32_t t
     handle->period = 0;
     handle->duty = 0xFFFF;
     handle->wait_values_ctr = RESET_WAIT_SECONDS * TRADFRI_FREQ;
+    handle->elapsed_ctr = 0;
+    uint32_t elapsed_max = (SLEEP_WAIT_SECONDS * tradfri_timer_clock) / (htim->Init.Period * (htim->Init.Prescaler + 1));
+    handle->elapsed_max = elapsed_max;
 }
 
 static void tradfri_update_value(tradfri_decoder_t *handle, uint16_t duty)
@@ -49,6 +52,7 @@ void tradfri_capture_callback(tradfri_decoder_t *handle, TIM_HandleTypeDef *htim
     {
         handle->pulse_width = HAL_TIM_ReadCapturedValue(htim, TIM_CHANNEL_2);
     }
+    handle->elapsed_ctr = 0;
 }
 
 void tradfri_elapsed_callback(tradfri_decoder_t *handle, TIM_HandleTypeDef *htim)
@@ -58,4 +62,13 @@ void tradfri_elapsed_callback(tradfri_decoder_t *handle, TIM_HandleTypeDef *htim
         uint16_t duty = HAL_GPIO_ReadPin(TRADFRI_STATE_GPIO_Port, TRADFRI_STATE_Pin) == GPIO_PIN_SET ? 100 : 0;
         tradfri_update_value(handle, duty);
     }
+    if (handle->wait_values_ctr == 0)
+    {
+      handle->elapsed_ctr = handle->elapsed_ctr >= handle->elapsed_max ? handle->elapsed_ctr : handle->elapsed_ctr + 1;
+    }
+}
+
+uint8_t tradfri_can_sleep(tradfri_decoder_t *handle)
+{
+    return handle->elapsed_ctr >= handle->elapsed_max;
 }

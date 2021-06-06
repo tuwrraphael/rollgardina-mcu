@@ -49,7 +49,7 @@ TIM_HandleTypeDef htim3;
 /* USER CODE BEGIN PV */
 tradfri_decoder_t tradfri_decoder;
 stepper_driver_t stepper;
-uint8_t lastCmd = 0;
+uint8_t skip_irq = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -79,6 +79,14 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
 void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim) {
   if (htim == &htim2) {
       tradfri_elapsed_callback(&tradfri_decoder, &htim2);
+  }
+}
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
+  if (GPIO_Pin == TRADFRI_STATE_Pin) {
+    if (!skip_irq) {
+      HAL_NVIC_DisableIRQ(EXTI1_IRQn);
+    }
   }
 }
 
@@ -134,11 +142,23 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    __WFE();
+    if (stepper.mode != MODE_STOPPED || !tradfri_can_sleep(&tradfri_decoder)) {
+      HAL_PWR_EnterSLEEPMode(PWR_MAINREGULATOR_ON, PWR_SLEEPENTRY_WFE);
+    }
+    else {
+      HAL_NVIC_SetPriority(EXTI1_IRQn, 0, 0);
+      skip_irq = 1;
+      HAL_NVIC_EnableIRQ(EXTI1_IRQn);
+      skip_irq = 0;
+
+      HAL_SuspendTick();
+      HAL_PWR_EnterSTOPMode(PWR_LOWPOWERREGULATOR_ON, PWR_STOPENTRY_WFI);
+      HAL_ResumeTick();
+    }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-  }
+  }  
   /* USER CODE END 3 */
 }
 
@@ -339,7 +359,7 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin : TRADFRI_STATE_Pin */
   GPIO_InitStruct.Pin = TRADFRI_STATE_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(TRADFRI_STATE_GPIO_Port, &GPIO_InitStruct);
 

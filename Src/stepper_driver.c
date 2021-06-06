@@ -63,6 +63,8 @@ void stepper_init(stepper_driver_t *instance, TIM_HandleTypeDef *updateTimerHand
     instance->arr_speed_start = (1 * instance->update_timer_clock / ACC_START_STEP_S) / 2;
     instance->arr_speed_end = instance->arr_speed_start;
     instance->drv_pin = false;
+    instance->endschalter_unten_ctr = 0;
+    instance->endschalter_oben_ctr = 0;
 
     HAL_GPIO_WritePin(DRV_M0_GPIO_Port, DRV_M0_Pin, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(DRV_M1_GPIO_Port, DRV_M1_Pin, GPIO_PIN_SET);
@@ -76,27 +78,40 @@ void stepper_init(stepper_driver_t *instance, TIM_HandleTypeDef *updateTimerHand
 
 void stepper_time_update(stepper_driver_t *instance)
 {
-    bool obenEndReached = false;
-    bool untenEndReached = false;
-    if (HAL_GPIO_ReadPin(END_OBEN_GPIO_Port, END_OBEN_Pin) == GPIO_PIN_RESET)
+    bool obenGedrueckt = HAL_GPIO_ReadPin(END_OBEN_GPIO_Port, END_OBEN_Pin) == GPIO_PIN_RESET;
+    bool untenGedrueckt = HAL_GPIO_ReadPin(END_UNTEN_GPIO_Port, END_UNTEN_Pin) == GPIO_PIN_RESET;
+
+    if (obenGedrueckt) {
+        instance->endschalter_oben_ctr = instance->endschalter_oben_ctr >= ENDSCHALTER_DEBONCE_US ? instance->endschalter_oben_ctr : instance->endschalter_oben_ctr + instance->update_cycle_us;
+    } else {
+        instance->endschalter_oben_ctr = 0;
+    }
+    if (untenGedrueckt) {
+        instance->endschalter_unten_ctr = instance->endschalter_unten_ctr >= ENDSCHALTER_DEBONCE_US ? instance->endschalter_unten_ctr : instance->endschalter_unten_ctr + instance->update_cycle_us;
+    } else {
+        instance->endschalter_unten_ctr = 0;
+    }
+
+    bool obenEndReached = instance->endschalter_oben_ctr >= ENDSCHALTER_DEBONCE_US;
+    bool untenEndReached = instance->endschalter_unten_ctr >= ENDSCHALTER_DEBONCE_US;
+
+    if (obenEndReached)
     {
-        obenEndReached = true;
         instance->currentPos = instance->obenPos;
         instance->targetPos = get_pos(instance, instance->targetPercentage);
     }
-    else if (HAL_GPIO_ReadPin(END_UNTEN_GPIO_Port, END_UNTEN_Pin) == GPIO_PIN_RESET)
+    else if (untenEndReached)
     {
-        untenEndReached = true;
         instance->currentPos = instance->untenPos;
         instance->targetPos = get_pos(instance, instance->targetPercentage);
     }
 
     instance->timeout = instance->timeout > instance->update_cycle_us ? instance->timeout - instance->update_cycle_us : 0;
-    instance->acc_timeout = instance->acc_timeout > instance->update_cycle_us ? instance->acc_timeout - instance->update_cycle_us : 0;
-    if (obenEndReached || untenEndReached) {
+    if (obenGedrueckt || untenGedrueckt) {
         instance->endschalter_timeout += instance->update_cycle_us;
     }
     int16_t makeStep = 0;
+    bool endschalterAbwarten = false;
     switch (instance->mode)
     {
     case MODE_STOPPED:
@@ -114,11 +129,13 @@ void stepper_time_update(stepper_driver_t *instance)
         else if (instance->currentPos > instance->targetPos && !obenEndReached)
         {
             makeStep = -1;
+            endschalterAbwarten = obenGedrueckt;
             HAL_GPIO_WritePin(DRV_DIR_GPIO_Port, DRV_DIR_Pin, PIN_DIR_OBEN);
         }
         else if (instance->currentPos < instance->targetPos && !untenEndReached)
         {
             makeStep = 1;
+            endschalterAbwarten = untenGedrueckt;
             HAL_GPIO_WritePin(DRV_DIR_GPIO_Port, DRV_DIR_Pin, PIN_DIR_UNTEN);
         }
         break;
@@ -143,22 +160,25 @@ void stepper_time_update(stepper_driver_t *instance)
             instance->last_dir = dir;
             reset_acc(instance, dir);
         }
-        if (instance->acc_timeout == 0)
-        {
-            if (instance->acc_step > 0)
+        if (!endschalterAbwarten) {
+            instance->acc_timeout = instance->acc_timeout > instance->update_cycle_us ? instance->acc_timeout - instance->update_cycle_us : 0;
+            if (instance->acc_timeout == 0)
             {
-                instance->acc_step--;
-                double arr = instance->arr_speed_start + (double)(instance->arr_speed_end - instance->arr_speed_start) * (1.0 - ((double)instance->acc_step / (double)ACC_STEPS));
-                change_period(instance, (uint16_t)arr);
-                instance->acc_timeout = ACC_STEP_US;
+                if (instance->acc_step > 0)
+                {
+                    instance->acc_step--;
+                    double arr = instance->arr_speed_start + (double)(instance->arr_speed_end - instance->arr_speed_start) * (1.0 - ((double)instance->acc_step / (double)ACC_STEPS));
+                    change_period(instance, (uint16_t)arr);
+                    instance->acc_timeout = ACC_STEP_US;
+                }
             }
+            HAL_GPIO_WritePin(DRV_STEP_GPIO_Port, DRV_STEP_Pin, instance->drv_pin ? GPIO_PIN_RESET : GPIO_PIN_SET);
+            if (instance->drv_pin)
+            {
+                instance->currentPos += makeStep;
+            }
+            instance->drv_pin = !instance->drv_pin;
         }
-        HAL_GPIO_WritePin(DRV_STEP_GPIO_Port, DRV_STEP_Pin, instance->drv_pin ? GPIO_PIN_RESET : GPIO_PIN_SET);
-        if (instance->drv_pin)
-        {
-            instance->currentPos += makeStep;
-        }
-        instance->drv_pin = !instance->drv_pin;
     }
 }
 
@@ -176,10 +196,10 @@ void stepper_drive_target(stepper_driver_t *instance, uint16_t percentage)
     {
         return;
     }
-    if (instance->currentPos < instance->obenPos || instance->currentPos > instance->untenPos)
-    {
-        return;
-    }
+    // if (instance->currentPos < instance->obenPos || instance->currentPos > instance->untenPos)
+    // {
+    //     return;
+    // }
     instance->targetPos = get_pos(instance, percentage);
     instance->mode = MODE_DRIVE_TARGET;
     instance->timeout = DRV_TIMEOUT_SECONDS * 1000 * 1000;
